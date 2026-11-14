@@ -1,0 +1,37 @@
+{
+  "_help": "sites 里的每一项都会成为右键菜单中的一项；default 填某一项的 id，决定左键单击打开哪个；browser 可填 auto、chrome、edge、brave、vivaldi、chromium，或浏览器 exe 的完整路径；pwa 为 true 时用 --app 独立窗口打开。",
+  "title": "AI 快捷启动器",
+  "default": "deepseek",
+  "browser": "auto",
+  "pwa": true,
+  "extra_args": [],
+  "icon": null,
+  "accent": "#4F46E5",
+  "sites": [
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "url": "https://chat.deepseek.com/"
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "url": "https://chatgpt.com/"
+    },
+    {
+      "id": "claude",
+      "name": "Claude",
+      "url": "https://claude.ai/"
+    },
+    {
+      "id": "doubao",
+      "name": "豆包",
+      "url": "https://www.doubao.com/chat/"
+    },
+    {
+      "id": "kimi",
+      "name": "Kimi",
+      "url": "https://kimi.moonshot.cn/"
+    }
+  ]
+}
