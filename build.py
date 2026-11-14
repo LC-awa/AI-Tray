@@ -44,6 +44,8 @@ def main() -> int:
         NAME,
         "--icon",
         "icon.ico",
+        "--version-file",
+        "version_info.txt",
         # pystray 在运行时动态导入 Windows 后端，PyInstaller 静态分析找不到
         "--hidden-import",
         "pystray._win32",

@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -50,6 +50,14 @@ DEFAULT_ACCENT = "#4F46E5"          # 靛蓝
 MUTEX_NAME = "AITray.SingleInstance.v1"
 ERROR_ALREADY_EXISTS = 183
 OPEN_DEBOUNCE_SECONDS = 1.0
+
+# 开机自启：写入当前用户的 Run 键，不需要管理员权限；
+# 任务管理器的“启动应用”列表读的就是这里。
+AUTOSTART_NAME = "AI-Tray"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+STARTUP_APPROVED_KEY = (
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+)
 
 logger = logging.getLogger("ai_tray")
 
@@ -98,12 +106,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "_help": (
         "sites 里的每一项都会成为右键菜单中的一项；default 填某一项的 id，"
         "决定左键单击打开哪个；browser 可填 auto、chrome、edge、brave、vivaldi、"
-        "chromium，或浏览器 exe 的完整路径；pwa 为 true 时用 --app 独立窗口打开。"
+        "chromium，或浏览器 exe 的完整路径；pwa 为 true 时用 --app 独立窗口打开；"
+        "autostart 为 true 时把本程序加入当前用户的开机自启（任务管理器可见）。"
     ),
     "title": APP_TITLE,
     "default": "deepseek",
     "browser": "auto",
     "pwa": True,
+    "autostart": True,
     "extra_args": [],
     "icon": None,
     "accent": DEFAULT_ACCENT,
@@ -135,6 +145,7 @@ class Config:
     default_id: str
     browser_pref: str
     pwa: bool
+    autostart: bool
     extra_args: tuple[str, ...]
     icon: Path | None
     accent: str
@@ -331,6 +342,11 @@ def parse_config(raw: Any, path: Path) -> Config:
         warn("pwa 必须是 true 或 false，已按 true 处理。")
         pwa = True
 
+    autostart = raw.get("autostart", True)
+    if not isinstance(autostart, bool):
+        warn("autostart 必须是 true 或 false，已按 true 处理。")
+        autostart = True
+
     extra_raw = raw.get("extra_args", [])
     if extra_raw is None:
         extra_raw = []
@@ -430,6 +446,7 @@ def parse_config(raw: Any, path: Path) -> Config:
         default_id=default_id,
         browser_pref=browser_pref,
         pwa=pwa,
+        autostart=autostart,
         extra_args=extra_args,
         icon=icon,
         accent=accent,
@@ -467,6 +484,178 @@ def load_config(path: Path, *, create: bool = True) -> Config:
         ) from exc
 
     return parse_config(raw, path)
+
+
+# ---------------------------------------------------------------------------
+# 开机自启（HKCU\...\Run，任务管理器可见）
+# ---------------------------------------------------------------------------
+
+
+def build_autostart_command(config_path: Path) -> str:
+    """生成写入注册表 Run 键的命令行。
+
+    打包后指向 exe；源码运行时使用 pythonw.exe 启动 ai_tray.py，避免弹出控制台。
+    如果使用的是非默认配置文件，会把 --config 也带上。
+    """
+    if getattr(sys, "frozen", False):
+        parts = [str(Path(sys.executable).resolve())]
+    else:
+        executable = Path(sys.executable)
+        pythonw = executable.with_name("pythonw.exe")
+        if pythonw.is_file():
+            executable = pythonw
+        parts = [str(executable), str(Path(__file__).resolve())]
+
+    default_config = (app_dir() / "config.json").resolve()
+    if Path(config_path).resolve() != default_config:
+        parts.extend(["--config", str(Path(config_path).resolve())])
+
+    return subprocess.list2cmdline(parts)
+
+
+def read_autostart_command() -> str | None:
+    """返回 Run 键里本程序的命令行；不存在时返回 None。"""
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, AUTOSTART_NAME)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        logger.exception("读取开机自启项失败")
+        return None
+    return value if isinstance(value, str) else None
+
+
+def startup_approved_disabled() -> bool:
+    r"""任务管理器是否把本启动项禁用了。
+
+    StartupApproved\Run 的值是 12 字节二进制：首字节 0x02 表示启用，
+    0x03 表示禁用（后面是时间戳）。没有这个值表示默认启用。
+    """
+    if sys.platform != "win32":
+        return False
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, AUTOSTART_NAME)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.exception("读取任务管理器启动项状态失败")
+        return False
+
+    if isinstance(value, (bytes, bytearray)) and value:
+        return value[0] != 0x02
+    return False
+
+
+def is_autostart_active() -> bool:
+    """启动项存在且没有被任务管理器禁用。"""
+    return read_autostart_command() is not None and not startup_approved_disabled()
+
+
+def _write_autostart_command(command: str) -> None:
+    import winreg
+
+    with winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
+    ) as key:
+        winreg.SetValueEx(key, AUTOSTART_NAME, 0, winreg.REG_SZ, command)
+
+
+def _clear_startup_approved() -> None:
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.DeleteValue(key, AUTOSTART_NAME)
+    except FileNotFoundError:
+        pass
+
+
+def enable_autostart(command: str) -> None:
+    """写入 Run 键，并清除任务管理器可能留下的“禁用”标记。"""
+    _write_autostart_command(command)
+    _clear_startup_approved()
+    logger.info("已启用开机自启：%s", command)
+
+
+def disable_autostart() -> None:
+    """删除 Run 键，任务管理器里也会随之消失。"""
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.DeleteValue(key, AUTOSTART_NAME)
+    except FileNotFoundError:
+        pass
+    _clear_startup_approved()
+    logger.info("已关闭开机自启")
+
+
+def persist_autostart(path: Path, enabled: bool) -> bool:
+    """把选择写回 config.json，保持界面、配置和注册表一致。"""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(raw, dict):
+            raise ValueError("配置文件最外层不是 JSON 对象")
+        raw["autostart"] = bool(enabled)
+        text = json.dumps(raw, ensure_ascii=False, indent=2) + "\n"
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_text(text, encoding="utf-8")
+        os.replace(temp, path)
+        logger.info("配置 autostart 已更新为 %s", enabled)
+        return True
+    except (OSError, ValueError):
+        logger.exception("写入配置 autostart 失败")
+        return False
+
+
+def sync_autostart(config: Config) -> None:
+    """启动/重载配置时同步注册表。
+
+    * autostart=true 且没有启动项：自动加入；
+    * 已有启动项但被任务管理器禁用：保持禁用，不覆盖用户选择；
+    * autostart=false：移除启动项。
+    """
+    if sys.platform != "win32":
+        return
+
+    command = build_autostart_command(config.path)
+    current = read_autostart_command()
+
+    try:
+        if not config.autostart:
+            if current is not None:
+                disable_autostart()
+                logger.info("配置 autostart=false，已移除启动项")
+            return
+
+        if current is None:
+            enable_autostart(command)
+            logger.info("配置 autostart=true，已加入开机自启")
+            return
+
+        if current != command:
+            # 路径变了：只更新命令，保留任务管理器的启用/禁用状态
+            _write_autostart_command(command)
+            logger.info("已更新开机自启命令：%s", command)
+
+        if startup_approved_disabled():
+            logger.info("启动项当前被任务管理器禁用，保持禁用状态")
+        else:
+            logger.info("开机自启已启用：%s", command)
+    except OSError:
+        logger.exception("同步开机自启失败")
 
 
 # ---------------------------------------------------------------------------
@@ -895,6 +1084,11 @@ class TrayApp:
         items.extend(
             [
                 pystray.Menu.SEPARATOR,
+                pystray.MenuItem(
+                    "开机自启",
+                    self._on_toggle_autostart,
+                    checked=self._autostart_checked,
+                ),
                 pystray.MenuItem("打开配置文件", self._on_open_config),
                 pystray.MenuItem("重新加载配置", self._on_reload),
                 pystray.Menu.SEPARATOR,
@@ -958,6 +1152,37 @@ class TrayApp:
 
     # -- 菜单动作 -----------------------------------------------------------
 
+    def _autostart_checked(self, item) -> bool:
+        return is_autostart_active()
+
+    def _on_toggle_autostart(self, icon, item) -> None:
+        target = not is_autostart_active()
+        logger.info("切换开机自启：%s -> %s", not target, target)
+
+        if not persist_autostart(self.config.path, target):
+            _msgbox(
+                "无法写入配置文件，开机自启没有修改。\n\n"
+                f"{self.config.path}",
+                APP_NAME,
+                0x10,
+            )
+            return
+
+        self.config = replace(self.config, autostart=target)
+        try:
+            if target:
+                enable_autostart(build_autostart_command(self.config.path))
+            else:
+                disable_autostart()
+        except OSError as exc:
+            logger.exception("修改开机自启失败")
+            _msgbox(f"修改开机自启失败：\n\n{exc}", APP_NAME, 0x10)
+            icon.update_menu()
+            return
+
+        self._notify("已开启开机自启" if target else "已关闭开机自启")
+        icon.update_menu()
+
     def _on_open_config(self, icon, item) -> None:
         path = self.config.path
         if not path.exists():
@@ -983,6 +1208,7 @@ class TrayApp:
             return
 
         self.config = config
+        sync_autostart(config)
         self._configure_browser(config)
         self.icon.icon = load_icon(config)
         self.icon.title = self._tooltip()
@@ -1035,6 +1261,19 @@ def run_check(config_path: Path) -> int:
     lines.append(
         "PWA 模式: " + ("开启（--app 独立窗口）" if config.pwa else "关闭（普通标签页）")
     )
+    registered = read_autostart_command() is not None
+    if registered and not startup_approved_disabled():
+        autostart_status = "已启用"
+    elif registered:
+        autostart_status = "已注册，但被任务管理器禁用"
+    else:
+        autostart_status = "未注册"
+    lines.append(
+        f"开机自启: {autostart_status}"
+        f"（配置 autostart={str(config.autostart).lower()}）"
+    )
+    lines.append(f"自启命令: {build_autostart_command(config.path)}")
+    lines.append(f"任务管理器中的名称: {AUTOSTART_NAME}")
     lines.append(f"左键默认: {config.default_site.name} — {config.default_site.url}")
     lines.append("右键菜单:")
     for site in config.sites:
@@ -1143,6 +1382,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("配置错误：%s", exc)
         _msgbox(f"配置加载失败：\n\n{exc}", "配置有误", 0x10)
         return 1
+
+    sync_autostart(config)
 
     def thread_excepthook(hook_args) -> None:
         logger.error(

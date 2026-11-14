@@ -4,6 +4,7 @@
 
 - **左键单击**托盘图标：用 Chromium 内核浏览器以 **PWA 风格独立窗口**打开默认 AI 站点（默认 DeepSeek）。
 - **右键单击**托盘图标：弹出菜单，随时切换 ChatGPT、Claude、豆包、Kimi 等站点。
+- **开机自启**：默认加入当前用户的启动项，右键菜单里的“开机自启”可随时开关；任务管理器的“启动应用”里能看到 `AI-Tray`。
 - 菜单最下方是 **退出程序**。
 - 菜单项、默认站点、浏览器、图标颜色都写在 `config.json` 里，改完点一下“重新加载配置”即可生效。
 
@@ -39,7 +40,7 @@ python ai_tray.py
 pythonw ai_tray.py
 ```
 
-第一次运行会在 `ai_tray.py` 同目录生成 `config.json`（本仓库已经附带一份）。
+第一次运行会在 `ai_tray.py` 同目录生成 `config.json`（本仓库已经附带一份），并按 `autostart: true` 把程序加入当前用户的开机自启。
 
 ### 自检命令
 
@@ -49,7 +50,7 @@ pythonw ai_tray.py
 python ai_tray.py --check
 ```
 
-它会打印：配置文件路径、识别到的浏览器、默认站点、菜单结构、实际会执行的启动命令。
+它会打印：配置文件路径、识别到的浏览器、默认站点、菜单结构、开机自启状态、实际会执行的启动命令。
 
 其他命令行参数：
 
@@ -72,6 +73,7 @@ Claude
 豆包
 Kimi
 ─────────────
+开机自启          ← 勾选/取消
 打开配置文件
 重新加载配置
 ─────────────
@@ -80,8 +82,9 @@ Kimi
 
 - 单击哪个 AI，就用 Chromium 的 `--app=网址` 打开哪个独立窗口。
 - **左键单击**托盘图标 = 点击“默认项”，打开 `config.json` 中 `default` 指定的站点。
+- “开机自启”是复选项，勾选状态实时反映当前注册表/任务管理器状态。
 - “打开配置文件”会用系统默认编辑器打开 `config.json`。
-- “重新加载配置”不用重启程序，改完网址、菜单、浏览器后点它即可。
+- “重新加载配置”不用重启程序，改完网址、菜单、浏览器、开机自启后点它即可。
 
 ---
 
@@ -95,6 +98,7 @@ Kimi
   "default": "deepseek",
   "browser": "auto",
   "pwa": true,
+  "autostart": true,
   "extra_args": [],
   "icon": null,
   "accent": "#4F46E5",
@@ -119,6 +123,7 @@ Kimi
 | `default` | 左键单击打开哪个站点，填某个站点的 `id` |
 | `browser` | `auto`、`chrome`、`edge`、`brave`、`vivaldi`、`chromium`，或浏览器 exe 的完整路径 |
 | `pwa` | `true`：`--app=网址` 独立窗口（PWA 风格）；`false`：普通标签页 |
+| `autostart` | `true`：启动时自动加入开机自启；`false`：启动时移除启动项。右键菜单的“开机自启”会同步修改这个值 |
 | `extra_args` | 追加给浏览器的参数，例如 `["--profile-directory=Default"]` |
 | `icon` | 自定义图标路径（`.png` / `.ico`），相对路径以 `config.json` 所在目录为准；`null` 表示自动生成 |
 | `accent` | 自动生成图标的主色，格式 `#RRGGBB` |
@@ -184,7 +189,7 @@ python build.py --console
 
 ```powershell
 python ai_tray.py --export-icon icon.ico
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name AI-Tray --icon icon.ico --hidden-import pystray._win32 ai_tray.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name AI-Tray --icon icon.ico --version-file version_info.txt --hidden-import pystray._win32 ai_tray.py
 ```
 
 `--hidden-import pystray._win32` 不能省：pystray 在运行时才动态导入 Windows 后端，PyInstaller 的静态分析发现不了它，漏掉会在启动时报 `ImportError`。
@@ -201,14 +206,20 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name AI-Tray --
 
 本仓库已经附带一个按上述命令打好的 `dist\AI-Tray.exe`，`dist\config.json` 也放在它旁边，双击即可试运行。修改配置时，改 `dist\config.json` 或重新打包时把根目录的 `config.json` 复制过去。
 
-### 开机自启
+### 开机自启（任务管理器可见）
 
-不需要管理员权限：
+程序使用当前用户的注册表 Run 键，不需要管理员权限：
 
-1. `Win + R` 输入 `shell:startup` 回车；
-2. 在打开的“启动”文件夹里新建一个指向 `AI-Tray.exe` 的快捷方式。
+```text
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run\AI-Tray
+```
 
-登录 Windows 后程序会自动出现在托盘里。
+- `autostart: true`（默认）：程序启动时如果启动项不存在就自动写入；首次运行后，任务管理器 →“启动应用”里会出现 `AI-Tray`。
+- 右键菜单的“开机自启”可以即时开关：勾选 = 写入启动项并清除任务管理器的禁用标记；取消 = 删除启动项，任务管理器里也会消失。
+- 如果先在任务管理器里把它禁用，程序菜单会显示未勾选，并保持禁用，不会强行改回；在菜单里重新勾选即可恢复。
+- `autostart: false` 时，程序每次启动都会移除已有启动项。
+- 移动 exe 后，重新运行一次程序（或关闭再开启“开机自启”）会更新启动命令路径。
+- 开机启动时不会弹出窗口，只在托盘区显示图标。
 
 ---
 
@@ -219,6 +230,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name AI-Tray --
 - **浏览器**：用 `webbrowser.register()` 注册一个自定义 controller，再通过 `webbrowser.get(...).open(...)` 调用。controller 内部用 `subprocess.Popen` 启动 Chromium，并加上 `--app=网址`。
 - **图标**：Pillow 画 4 倍尺寸后缩放到 256×256，保存成多尺寸 ICO 交给 pystray；也支持加载自定义图片。
 - **单实例**：用 Windows 命名互斥体（`CreateMutexW`）防止重复启动出多个托盘图标。
+- **开机自启**：写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\AI-Tray`，任务管理器直接读取该位置；同时读取 `StartupApproved\Run` 判断是否被任务管理器禁用。
 - **防重复点击**：同一站点 1 秒内只打开一次，避免双击时弹出两个窗口。
 - **兼容性**：pystray 创建托盘窗口时会调用 `ChangeWindowMessageFilterEx`；在部分受限令牌或安全软件环境下这个调用会返回“拒绝访问”，pystray 默认会因此启动失败。程序对该调用做了容错，失败只记一条警告，不影响托盘启动。
 - **日志**：`%LOCALAPPDATA%\AI-Tray\ai-tray.log`（自动轮转，最多约 3 MB）。因为打包成 `--windowed` 后没有控制台，排查问题请看这个文件。
@@ -249,6 +261,12 @@ Windows 11 默认把新图标收进“^”溢出区。点任务栏右下角的 `
 **双击托盘图标会开两个窗口吗？**
 不会。同一站点有 1 秒防抖，双击只会打开一次。
 
+**任务管理器里看不到 AI-Tray？**
+先确认右键菜单里的“开机自启”已勾选，或运行 `python ai_tray.py --check` 查看“开机自启”状态。任务管理器需要打开“启动应用”页；如果列表是旧的，关掉再打开一次。
+
+**想彻底关闭开机自启？**
+右键托盘 → 取消“开机自启”（会把 Run 值和任务管理器的状态一起清掉），或者在任务管理器 →“启动应用”里禁用它。程序菜单会读取任务管理器的禁用状态，不会强行改回。
+
 ---
 
 ## 7. 文件说明
@@ -259,8 +277,9 @@ AI-Tray/
 ├─ config.json       菜单、网址、浏览器、图标配置
 ├─ requirements.txt  pystray + Pillow
 ├─ build.py          一键打包脚本
+├─ version_info.txt  exe 版本信息（任务管理器显示 AI-Tray）
 ├─ icon.ico          由代码生成的 exe/托盘图标（可用 --export-icon 重新生成）
 └─ README.md         本文件
 ```
 
-卸载：退出程序，删除文件夹即可。程序不写注册表（除非你自己加了开机启动快捷方式），日志在 `%LOCALAPPDATA%\AI-Tray`。
+卸载：先右键托盘 → 取消“开机自启”，再退出程序、删除文件夹。程序只在 `HKCU\...\Run` 写入一个 `AI-Tray` 启动项（开启自启时），日志在 `%LOCALAPPDATA%\AI-Tray`。
